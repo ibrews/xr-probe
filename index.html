@@ -151,19 +151,19 @@
     async function enterXR(mode) {
       dom.error.textContent = '';
       try {
-        // Round 2 (Alex, live on Meta VR Glasses hardware): Enter AR worked
-        // (with occlusion!) but Enter VR threw NotSupportedError. `depthSensing`
-        // is a validated sessionInit dictionary, not a soft optionalFeatures
-        // string -- unlike the string list (which a UA must silently ignore if
-        // unsupported), the Depth Sensing spec lets a UA reject the WHOLE
-        // session request if `depthSensing` is present but not satisfiable for
-        // that XRSessionMode. Scene depth is passthrough/AR-only on Meta
-        // Browser, so attaching it to immersive-vr sank every session. Only
-        // attach it for AR; 'depth-sensing' stays in optionalFeatures for VR
-        // (harmless -- the string form degrades gracefully) so the readout
-        // still shows whether a future VR runtime grants it.
-        const sessionInit = { optionalFeatures, domOverlay: { root: document.body } };
+        // Round 3 (Alex, still on Meta VR Glasses hardware: "xrprobe still
+        // doesn't Enter VR" after round 2's depthSensing fix). Same failure
+        // shape, second landmine: `domOverlay` is ALSO a validated sessionInit
+        // dictionary, not a soft optionalFeatures string, and it was still
+        // attached unconditionally in round 2. The in-session readout has
+        // never used it -- the panel is a WebGL plane with a CanvasTexture
+        // (see placePanel below), fully independent of DOM overlay -- so it
+        // was pure dead weight for VR, just like depthSensing. Only attach it
+        // for AR now; 'dom-overlay' stays in optionalFeatures for VR so the
+        // readout still records whether a runtime would grant it.
+        const sessionInit = { optionalFeatures };
         if (mode === 'immersive-ar') {
+          sessionInit.domOverlay = { root: document.body };
           sessionInit.depthSensing = { usagePreference: ['cpu-optimized', 'gpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] };
         }
         session = await navigator.xr.requestSession(mode, sessionInit);
