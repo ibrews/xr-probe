@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>XR Probe — Alex Coulombe Presents</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: #07131d; color: #c9f6ff; }
+    main { position: relative; z-index: 2; width: min(72rem, 100%); margin: auto; padding: 2rem; }
+    h1 { margin: 0 0 .25rem; font-size: clamp(2rem, 7vw, 4.5rem); letter-spacing: -.06em; }
+    .brand { color: #77d8ff; margin-bottom: 2rem; }
+    pre, textarea { width: 100%; padding: 1rem; border: 1px solid #287590; border-radius: .5rem; background: #02080d; color: #d8fbff; font: inherit; line-height: 1.35; white-space: pre-wrap; }
+    textarea { min-height: 20rem; margin-top: 1rem; }
+    button { margin: 0 .6rem .8rem 0; padding: .8rem 1.1rem; border: 1px solid #6fe1ff; border-radius: .4rem; background: #07374a; color: white; font: bold 1rem inherit; cursor: pointer; }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    #xr-canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 1; }
+    body.presenting main { display: none; }
+    #error { color: #ffb4a8; }
+  </style>
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <main>
+    <h1>XR PROBE</h1>
+    <div class="brand">Alex Coulombe Presents</div>
+    <div id="buttons">
+      <button id="enter" disabled>Checking WebXR…</button>
+      <button id="enter-ar" hidden>Enter AR</button>
+      <button id="copy" hidden>Copy JSON</button>
+    </div>
+    <div id="error" role="alert"></div>
+    <pre id="readout">Collecting browser capabilities…</pre>
+    <textarea id="json" hidden readonly aria-label="Last XR snapshot JSON"></textarea>
+  </main>
+  <canvas id="xr-canvas"></canvas>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    const optionalFeatures = [
+      'local-floor', 'bounded-floor', 'unbounded', 'hand-tracking', 'layers',
+      'dom-overlay', 'anchors', 'hit-test', 'depth-sensing', 'plane-detection',
+      'mesh-detection', 'light-estimation', 'camera-access', 'secondary-views',
+    ];
+    const referenceSpaceTypes = ['viewer', 'local', 'local-floor', 'bounded-floor', 'unbounded'];
+    const dom = {
+      enter: document.querySelector('#enter'), enterAR: document.querySelector('#enter-ar'),
+      copy: document.querySelector('#copy'), readout: document.querySelector('#readout'),
+      json: document.querySelector('#json'), error: document.querySelector('#error'),
+    };
+    const probe = window.__probe = { snapshot: null, log: [] };
+    const capabilities = {};
+    const eventCounts = { selectstart: {}, select: {}, squeeze: {} };
+    const refSpaces = {};
+    let session = null;
+    let baseLayer = null;
+    let lastSnapshotAt = 0;
+    let placePanel = false;
+
+    const renderer = new THREE.WebGLRenderer({ canvas: document.querySelector('#xr-canvas'), antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.xr.enabled = true;
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07131d);
+    const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 100);
+    camera.position.set(0, 1.6, 0);
+    scene.add(new THREE.GridHelper(12, 24, 0x2086a0, 0x123947));
+
+    const panelCanvas = document.createElement('canvas');
+    panelCanvas.width = 1536;
+    panelCanvas.height = 1024;
+    const panelContext = panelCanvas.getContext('2d');
+    const panelTexture = new THREE.CanvasTexture(panelCanvas);
+    panelTexture.colorSpace = THREE.SRGBColorSpace;
+    const panel = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.6, 1.6 * panelCanvas.height / panelCanvas.width),
+      new THREE.MeshBasicMaterial({ map: panelTexture, transparent: false, side: THREE.DoubleSide }),
+    );
+    panel.position.set(0, 1.6, -1.5);
+    scene.add(panel);
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    addEventListener('error', event => showError(event.message || String(event.error || event.type)));
+    addEventListener('unhandledrejection', event => showError(String(event.reason)));
+
+    function showError(message) {
+      dom.error.textContent = `Error: ${message}`;
+      console.error(message);
+    }
+
+    function webGLInfo() {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl2');
+      if (!gl) return { available: false };
+      const debug = gl.getExtension('WEBGL_debug_renderer_info');
+      return {
+        available: true,
+        vendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+        renderer: debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER),
+      };
+    }
+
+    async function collectCapabilities() {
+      Object.assign(capabilities, {
+        userAgent: navigator.userAgent,
+        userAgentDataBrands: navigator.userAgentData?.brands || null,
+        navigatorXR: !!navigator.xr,
+        immersiveVR: navigator.xr ? await navigator.xr.isSessionSupported('immersive-vr').catch(error => error.name) : false,
+        immersiveAR: navigator.xr ? await navigator.xr.isSessionSupported('immersive-ar').catch(error => error.name) : false,
+        navigatorGPU: !!navigator.gpu,
+        webGL2: webGLInfo(),
+        devicePixelRatio,
+        screen: { width: screen.width, height: screen.height, refreshRate: screen.refreshRate ?? null },
+      });
+      dom.readout.textContent = JSON.stringify(capabilities, null, 2);
+      const preferAR = new URLSearchParams(location.search).get('ar') === '1';
+      const defaultMode = preferAR && capabilities.immersiveAR ? 'immersive-ar' : 'immersive-vr';
+      dom.enter.textContent = defaultMode === 'immersive-ar' ? 'Enter AR' : 'Enter VR';
+      dom.enter.dataset.mode = defaultMode;
+      dom.enter.disabled = !capabilities[defaultMode === 'immersive-ar' ? 'immersiveAR' : 'immersiveVR'];
+      dom.enterAR.hidden = preferAR || !capabilities.immersiveAR;
+    }
+
+    const sourceKey = source => `${source.targetRayMode || 'unknown'}:${source.handedness || 'none'}`;
+    function countEvent(type, event) {
+      const key = sourceKey(event.inputSource);
+      eventCounts[type][key] = (eventCounts[type][key] || 0) + 1;
+      if (type === 'select') placePanel = true;
+    }
+
+    async function resolveReferenceSpaces(xrSession) {
+      await Promise.all(referenceSpaceTypes.map(async type => {
+        try {
+          refSpaces[type] = await xrSession.requestReferenceSpace(type);
+        } catch (error) {
+          refSpaces[type] = { error: error.name || 'Error' };
+        }
+      }));
+    }
+
+    async function enterXR(mode) {
+      dom.error.textContent = '';
+      try {
+        session = await navigator.xr.requestSession(mode, {
+          optionalFeatures,
+          domOverlay: { root: document.body },
+          depthSensing: { usagePreference: ['cpu-optimized', 'gpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] },
+        });
+        for (const type of ['selectstart', 'select', 'squeeze']) {
+          session.addEventListener(type, event => countEvent(type, event));
+        }
+        session.addEventListener('end', onSessionEnd, { once: true });
+        await renderer.xr.setSession(session);
+        // Layers-capable runtimes may expose a projection layer instead of an
+        // XRWebGLLayer; Three returns whichever layer owns the stereo target.
+        baseLayer = renderer.xr.getBaseLayer() || session.renderState.baseLayer;
+        await resolveReferenceSpaces(session);
+        document.body.classList.add('presenting');
+        placePanel = true;
+      } catch (error) {
+        showError(`${error.name}: ${error.message}`);
+      }
+    }
+
+    function fovForView(view) {
+      const m = view.projectionMatrix;
+      const l = (m[8] - 1) / m[0];
+      const r = (m[8] + 1) / m[0];
+      const b = (m[9] - 1) / m[5];
+      const t = (m[9] + 1) / m[5];
+      const deg = radians => radians * 180 / Math.PI;
+      return { eye: view.eye, left: deg(Math.atan(-l)), right: deg(Math.atan(r)), up: deg(Math.atan(t)), down: deg(Math.atan(-b)) };
+    }
+
+    function describeSource(source, frame, referenceSpace) {
+      const gamepad = source.gamepad;
+      let wristPose = false;
+      try {
+        const wrist = source.hand?.get('wrist');
+        wristPose = !!(wrist && referenceSpace && frame.getJointPose(wrist, referenceSpace));
+      } catch (_) {}
+      return {
+        handedness: source.handedness,
+        targetRayMode: source.targetRayMode,
+        profiles: [...source.profiles],
+        gamepad: gamepad ? {
+          buttons: gamepad.buttons.length,
+          axes: gamepad.axes.length,
+          pressedIndices: [...gamepad.buttons].map((button, index) => button.pressed ? index : -1).filter(index => index >= 0),
+          axesValues: [...gamepad.axes].map(value => Number.isFinite(value) ? Number(value.toFixed(4)) : value),
+        } : null,
+        hand: source.hand ? { present: true, size: source.hand.size, wristPose } : { present: false, size: 0, wristPose: false },
+        gripSpace: !!source.gripSpace,
+      };
+    }
+
+    function makeSnapshot(time, frame) {
+      const activeRefSpace = refSpaces['local-floor']?.error ? (refSpaces.local?.error ? refSpaces.viewer : refSpaces.local) : refSpaces['local-floor'];
+      const pose = activeRefSpace && !activeRefSpace.error ? frame.getViewerPose(activeRefSpace) : null;
+      const views = pose ? pose.views.map(fovForView) : [];
+      const left = views.find(view => view.eye === 'left');
+      const right = views.find(view => view.eye === 'right');
+      const reportedFeatures = session.enabledFeatures ? [...session.enabledFeatures] : [];
+      if (!reportedFeatures.includes('hand-tracking') && [...session.inputSources].some(source => source.hand)) reportedFeatures.push('hand-tracking');
+      return {
+        timestamp: new Date().toISOString(),
+        time: Number(time.toFixed(1)),
+        enabledFeatures: reportedFeatures.sort(),
+        environmentBlendMode: session.environmentBlendMode ?? null,
+        interactionMode: session.interactionMode ?? null,
+        visibilityState: session.visibilityState,
+        frameRate: session.frameRate ?? null,
+        supportedFrameRates: session.supportedFrameRates ? [...session.supportedFrameRates] : [],
+        referenceSpaces: Object.fromEntries(referenceSpaceTypes.map(type => [type, refSpaces[type]?.error ? `error:${refSpaces[type].error}` : (refSpaces[type] ? 'ok' : 'pending')])),
+        framebuffer: {
+          width: baseLayer?.framebufferWidth || baseLayer?.textureWidth || 0,
+          height: baseLayer?.framebufferHeight || baseLayer?.textureHeight || 0,
+        },
+        fixedFoveation: baseLayer?.fixedFoveation ?? null,
+        views,
+        binocularHorizontalFOV: left && right ? Number((left.left + right.right).toFixed(3)) : null,
+        inputSources: [...session.inputSources].map(source => describeSource(source, frame, activeRefSpace?.error ? null : activeRefSpace)),
+        eventCounts: structuredClone(eventCounts),
+      };
+    }
+
+    function snapshotText(snapshot) {
+      const lines = [
+        'XR PROBE — ALEX COULOMBE PRESENTS',
+        `mode ${snapshot.environmentBlendMode}  interaction ${snapshot.interactionMode}`,
+        `visibility ${snapshot.visibilityState}  frameRate ${snapshot.frameRate ?? 'n/a'}  supported [${snapshot.supportedFrameRates.join(', ')}]`,
+        `features [${snapshot.enabledFeatures.join(', ')}]`,
+        `refs ${Object.entries(snapshot.referenceSpaces).map(([key, value]) => `${key}:${value}`).join('  ')}`,
+        `framebuffer ${snapshot.framebuffer.width}×${snapshot.framebuffer.height}  foveation ${snapshot.fixedFoveation ?? 'n/a'}`,
+        ...snapshot.views.map(view => `${view.eye || 'none'} FOV L ${view.left.toFixed(1)}° R ${view.right.toFixed(1)}° U ${view.up.toFixed(1)}° D ${view.down.toFixed(1)}°`),
+        `binocular horizontal ${snapshot.binocularHorizontalFOV?.toFixed(1) ?? 'n/a'}°`,
+      ];
+      snapshot.inputSources.forEach((source, index) => {
+        lines.push(`source ${index + 1} ${source.handedness} ${source.targetRayMode} [${source.profiles.join(', ')}]`);
+        lines.push(`  gamepad b:${source.gamepad?.buttons ?? '-'} a:${source.gamepad?.axes ?? '-'} pressed:[${source.gamepad?.pressedIndices?.join(',') ?? ''}] axes:[${source.gamepad?.axesValues?.join(', ') ?? ''}]`);
+        lines.push(`  hand:${source.hand.present} joints:${source.hand.size} wristPose:${source.hand.wristPose} grip:${source.gripSpace}`);
+      });
+      for (const [type, counts] of Object.entries(snapshot.eventCounts)) lines.push(`${type}: ${JSON.stringify(counts)}`);
+      return lines.join('\n');
+    }
+
+    function drawPanel(text) {
+      panelContext.fillStyle = '#02080d';
+      panelContext.fillRect(0, 0, panelCanvas.width, panelCanvas.height);
+      panelContext.strokeStyle = '#5ad9ff';
+      panelContext.lineWidth = 10;
+      panelContext.strokeRect(10, 10, panelCanvas.width - 20, panelCanvas.height - 20);
+      panelContext.fillStyle = '#d8fbff';
+      panelContext.font = '30px monospace';
+      text.split('\n').slice(0, 28).forEach((line, index) => panelContext.fillText(line.slice(0, 91), 40, 55 + index * 34));
+      panelTexture.needsUpdate = true;
+    }
+
+    function positionPanel() {
+      const xrCamera = renderer.xr.getCamera(camera);
+      const direction = new THREE.Vector3(0, 0, -1).applyQuaternion(xrCamera.quaternion);
+      panel.position.copy(xrCamera.position).addScaledVector(direction, 1.5);
+      panel.quaternion.copy(xrCamera.quaternion);
+    }
+
+    function onSessionEnd() {
+      document.body.classList.remove('presenting');
+      session = null;
+      baseLayer = null;
+      const json = JSON.stringify(probe.snapshot, null, 2);
+      dom.readout.textContent = `Last XR snapshot\n\n${json}`;
+      dom.json.value = json;
+      dom.json.hidden = false;
+      dom.copy.hidden = false;
+    }
+
+    renderer.setAnimationLoop((time, frame) => {
+      if (session && frame) {
+        if (placePanel) {
+          positionPanel();
+          placePanel = false;
+        }
+        if (time - lastSnapshotAt >= 250) {
+          lastSnapshotAt = time;
+          const next = makeSnapshot(time, frame);
+          const text = snapshotText(next);
+          probe.snapshot = next;
+          probe.log.push(next);
+          if (probe.log.length > 240) probe.log.shift();
+          drawPanel(text);
+          console.log('XR Probe snapshot', next);
+        }
+      }
+      renderer.render(scene, camera);
+    });
+
+    dom.enter.addEventListener('click', () => enterXR(dom.enter.dataset.mode));
+    dom.enterAR.addEventListener('click', () => enterXR('immersive-ar'));
+    dom.copy.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(dom.json.value);
+      dom.copy.textContent = 'Copied';
+    });
+
+    collectCapabilities().catch(error => showError(error.stack || String(error)));
+  </script>
+</body>
+</html>
