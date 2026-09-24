@@ -151,11 +151,22 @@
     async function enterXR(mode) {
       dom.error.textContent = '';
       try {
-        session = await navigator.xr.requestSession(mode, {
-          optionalFeatures,
-          domOverlay: { root: document.body },
-          depthSensing: { usagePreference: ['cpu-optimized', 'gpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] },
-        });
+        // Round 2 (Alex, live on Meta VR Glasses hardware): Enter AR worked
+        // (with occlusion!) but Enter VR threw NotSupportedError. `depthSensing`
+        // is a validated sessionInit dictionary, not a soft optionalFeatures
+        // string -- unlike the string list (which a UA must silently ignore if
+        // unsupported), the Depth Sensing spec lets a UA reject the WHOLE
+        // session request if `depthSensing` is present but not satisfiable for
+        // that XRSessionMode. Scene depth is passthrough/AR-only on Meta
+        // Browser, so attaching it to immersive-vr sank every session. Only
+        // attach it for AR; 'depth-sensing' stays in optionalFeatures for VR
+        // (harmless -- the string form degrades gracefully) so the readout
+        // still shows whether a future VR runtime grants it.
+        const sessionInit = { optionalFeatures, domOverlay: { root: document.body } };
+        if (mode === 'immersive-ar') {
+          sessionInit.depthSensing = { usagePreference: ['cpu-optimized', 'gpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] };
+        }
+        session = await navigator.xr.requestSession(mode, sessionInit);
         for (const type of ['selectstart', 'select', 'squeeze']) {
           session.addEventListener(type, event => countEvent(type, event));
         }
