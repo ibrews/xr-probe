@@ -45,6 +45,12 @@
       'local-floor', 'bounded-floor', 'unbounded', 'hand-tracking', 'layers',
       'dom-overlay', 'anchors', 'hit-test', 'depth-sensing', 'plane-detection',
       'mesh-detection', 'light-estimation', 'camera-access', 'secondary-views',
+      // Round 4 (2026-09-29): Alex's hands-on found the Meta VR Glasses offer
+      // tracked hands, a gaze ray, and both. A continuous gaze source
+      // (targetRayMode 'gaze') is only granted when asked for, so without
+      // these two the probe could never report whether gaze exists. Plain
+      // optional strings — the kind round 3 showed the glasses tolerate.
+      'gaze-tracking', 'eye-tracking',
     ];
     const referenceSpaceTypes = ['viewer', 'local', 'local-floor', 'bounded-floor', 'unbounded'];
     const dom = {
@@ -196,9 +202,15 @@
     function describeSource(source, frame, referenceSpace) {
       const gamepad = source.gamepad;
       let wristPose = false;
+      let targetRayPose = false;
       try {
         const wrist = source.hand?.get('wrist');
         wristPose = !!(wrist && referenceSpace && frame.getJointPose(wrist, referenceSpace));
+      } catch (_) {}
+      // Is the ray actually live this frame? For a gaze source this is the
+      // difference between "offered" and "tracking your eyes right now".
+      try {
+        targetRayPose = !!(referenceSpace && frame.getPose(source.targetRaySpace, referenceSpace));
       } catch (_) {}
       return {
         handedness: source.handedness,
@@ -212,6 +224,7 @@
         } : null,
         hand: source.hand ? { present: true, size: source.hand.size, wristPose } : { present: false, size: 0, wristPose: false },
         gripSpace: !!source.gripSpace,
+        targetRayPose,
       };
     }
 
@@ -259,7 +272,7 @@
       snapshot.inputSources.forEach((source, index) => {
         lines.push(`source ${index + 1} ${source.handedness} ${source.targetRayMode} [${source.profiles.join(', ')}]`);
         lines.push(`  gamepad b:${source.gamepad?.buttons ?? '-'} a:${source.gamepad?.axes ?? '-'} pressed:[${source.gamepad?.pressedIndices?.join(',') ?? ''}] axes:[${source.gamepad?.axesValues?.join(', ') ?? ''}]`);
-        lines.push(`  hand:${source.hand.present} joints:${source.hand.size} wristPose:${source.hand.wristPose} grip:${source.gripSpace}`);
+        lines.push(`  hand:${source.hand.present} joints:${source.hand.size} wristPose:${source.hand.wristPose} grip:${source.gripSpace} ray:${source.targetRayPose ? 'live' : 'none'}`);
       });
       for (const [type, counts] of Object.entries(snapshot.eventCounts)) lines.push(`${type}: ${JSON.stringify(counts)}`);
       return lines.join('\n');

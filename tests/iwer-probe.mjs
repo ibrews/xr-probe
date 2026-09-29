@@ -8,7 +8,7 @@ const nm = process.env.NODE_MODULES || '/Users/alex/GH/isle-webxr/node_modules';
 const { chromium } = await import(pathToFileURL(`${nm}/playwright/index.mjs`).href);
 const iwer = readFileSync(process.env.IWER_JS || `${nm}/iwer/build/iwer.min.js`, 'utf8');
 const mode = process.argv[2] || 'hand';
-if (!['hand', 'controller'].includes(mode)) throw new Error('Mode must be hand or controller');
+if (!['hand', 'controller', 'glasses'].includes(mode)) throw new Error('Mode must be hand, controller or glasses');
 const outDir = process.env.TEST_OUTPUT || join(root, 'test-results');
 const failures = [];
 const check = (name, ok, detail = '') => {
@@ -44,7 +44,12 @@ const browser = await chromium.launch({
 try {
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   await context.addInitScript({ content: `${iwer}
-window.xrDevice = new IWER.XRDevice(IWER.metaQuest3);
+// 'glasses': IWER 2.5's Meta VR Glasses profile (view sampled from the device's
+// projection matrices) plus the gaze source Alex saw at the hands-on — the
+// profile inherits Quest 3's feature list and does not declare gaze itself.
+window.xrDevice = new IWER.XRDevice(${JSON.stringify(mode)} === 'glasses'
+  ? { ...IWER.metaVRGlasses, supportedFeatures: [...IWER.metaVRGlasses.supportedFeatures, 'gaze-tracking'] }
+  : IWER.metaQuest3);
 window.xrDevice.installRuntime({ forceInstall: true });
 window.xrDevice.stereoEnabled = true;
 // Three r170 assumes an XRWebGLBinding whenever depth-sensing is granted; IWER
@@ -63,7 +68,7 @@ navigator.xr.requestSession = async (...args) => {
   });
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'load' });
   await page.waitForFunction(() => window.__probe && !document.querySelector('#enter').disabled, null, { timeout: 30000 });
-  await page.evaluate(selectedMode => { window.xrDevice.primaryInputMode = selectedMode; }, mode);
+  await page.evaluate(selectedMode => { window.xrDevice.primaryInputMode = selectedMode === 'glasses' ? 'hand' : selectedMode; }, mode);
   await page.click('#enter');
   try {
     await page.waitForFunction(() => window.__probe.snapshot?.inputSources?.length >= 2, null, { timeout: 30000 });
@@ -75,9 +80,22 @@ navigator.xr.requestSession = async (...args) => {
   let snapshot = await page.evaluate(() => window.__probe.snapshot);
   check('framebuffer has dimensions', snapshot.framebuffer.width > 0 && snapshot.framebuffer.height > 0, JSON.stringify(snapshot.framebuffer));
   check('two views have finite FOV values', snapshot.views.length === 2 && snapshot.views.every(view => ['left', 'right', 'up', 'down'].every(key => Number.isFinite(view[key]))), JSON.stringify(snapshot.views));
-  check('two input sources', snapshot.inputSources.length === 2, String(snapshot.inputSources.length));
+  if (mode !== 'glasses') check('two input sources', snapshot.inputSources.length === 2, String(snapshot.inputSources.length));
 
-  if (mode === 'hand') {
+  if (mode === 'glasses') {
+    const gaze = snapshot.inputSources.filter(source => source.targetRayMode === 'gaze');
+    const hands = snapshot.inputSources.filter(source => source.hand.present);
+    check('reports a gaze source alongside two hands', gaze.length === 1 && hands.length === 2,
+      snapshot.inputSources.map(source => `${source.targetRayMode}${source.hand.present ? '+hand' : ''}`).join(', '));
+    check('gaze ray is live', gaze[0]?.targetRayPose === true);
+    check('gaze has no gamepad (it never selects)', gaze[0] && gaze[0].gamepad === null);
+    check('gaze-tracking reported as enabled', snapshot.enabledFeatures.some(f => f === 'gaze-tracking' || f === 'eye-tracking'), JSON.stringify(snapshot.enabledFeatures));
+    // Not checked: the glasses' asymmetric view (37/37 across, 25 up, 43 down).
+    // IWER 2.5 applies it as a visibility MASK over an ordinary, Quest-shaped
+    // projection, and the probe reads FOV from the projection — so under
+    // emulation it truthfully reports the emulator's projection. On the real
+    // device the projection itself is what IWER's numbers were sampled from.
+  } else if (mode === 'hand') {
     check('hands use tracked-pointer', snapshot.inputSources.every(source => source.targetRayMode === 'tracked-pointer'));
     check('hands expose 25 joints', snapshot.inputSources.every(source => source.hand.present && source.hand.size === 25), JSON.stringify(snapshot.inputSources.map(source => source.hand)));
     check('hand-tracking feature enabled', snapshot.enabledFeatures.includes('hand-tracking'), JSON.stringify(snapshot.enabledFeatures));

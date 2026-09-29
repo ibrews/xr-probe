@@ -12,10 +12,11 @@ Open <https://ibrews.github.io/xr-probe/> on a headset, tap **Enter VR**, and ph
 2. Add `?ar=1` to the URL to make immersive AR the default when the browser supports it.
 3. Compare the Quest 3 and Vision Pro view FOV, framebuffer, and frame-rate values.
 4. Pinch or press Select and confirm the panel moves back in front of your current head pose.
+5. On a gaze-capable headset (Meta VR Glasses, and eye-tracked Quest variants), look for a `gaze [eye-gaze]` source row with `ray:live`. A gaze source never fires select — a hand's pinch commits it — so if one appears, hand-tracked apps should aim with it rather than the pinching hand's own ray.
 
 ## Test
 
-The test uses IWER 2.4.0 and Playwright from a checkout that provides both packages:
+The test uses IWER 2.5 and Playwright from a checkout that provides both packages:
 
 ```sh
 NODE_MODULES=/path/to/node_modules node tests/iwer-probe.mjs hand
