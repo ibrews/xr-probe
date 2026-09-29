@@ -21,6 +21,7 @@ The test uses IWER 2.5 and Playwright from a checkout that provides both package
 ```sh
 NODE_MODULES=/path/to/node_modules node tests/iwer-probe.mjs hand
 NODE_MODULES=/path/to/node_modules node tests/iwer-probe.mjs controller
+NODE_MODULES=/path/to/node_modules node tests/iwer-probe.mjs glasses   # IWER metaVRGlasses + a gaze source
 ```
 
 ## License
