@@ -49,7 +49,8 @@
       // tracked hands, a gaze ray, and both. A continuous gaze source
       // (targetRayMode 'gaze') is only granted when asked for, so without
       // these two the probe could never report whether gaze exists. Plain
-      // optional strings — the kind round 3 showed the glasses tolerate.
+      // optional strings, which the WebXR spec says a UA ignores when
+      // unsupported. No device run has confirmed that on the glasses.
       'gaze-tracking', 'eye-tracking',
     ];
     const referenceSpaceTypes = ['viewer', 'local', 'local-floor', 'bounded-floor', 'unbounded'];
@@ -157,9 +158,10 @@
     async function enterXR(mode) {
       dom.error.textContent = '';
       try {
-        // Round 3 (Alex, still on Meta VR Glasses hardware: "xrprobe still
-        // doesn't Enter VR" after round 2's depthSensing fix). Same failure
-        // shape, second landmine: `domOverlay` is ALSO a validated sessionInit
+        // Round 3 (2026-09-24: Alex reported Enter VR still failing on his own
+        // headset, not the glasses, after round 2's depthSensing fix).
+        // SUSPECTED, never verified on a device: same failure shape, second
+        // landmine. `domOverlay` is ALSO a validated sessionInit
         // dictionary, not a soft optionalFeatures string, and it was still
         // attached unconditionally in round 2. The in-session readout has
         // never used it -- the panel is a WebGL plane with a CanvasTexture
